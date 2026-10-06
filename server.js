@@ -1,4 +1,4 @@
-// Plutonium proxy - server only.
+// Compaxy - server only.
 //
 // There is no frontend and no build step: this process is the whole proxy. Ask
 // it for a site and it fetches, rewrites and serves that site:
@@ -31,14 +31,17 @@ import { handleUpgrade } from "./src/websocket.js";
 // to an empty string or 0 ("pick anything") must still land on the default,
 // because nothing could discover the random one.
 const requestedPort = Number(process.env.PORT);
-const port =
-  Number.isInteger(requestedPort) && requestedPort > 0 ? requestedPort : 5201;
+const usingEnvPort =
+  Number.isInteger(requestedPort) && requestedPort > 0;
+const port = usingEnvPort ? requestedPort : 5201;
+
 // Platforms such as Render inject PORT and probe 0.0.0.0 for a listening
-// socket, so when a port is supplied from the environment we must bind every
+// socket, so once a usable port comes from the environment we must bind every
 // interface; a loopback-only bind is invisible to that probe and the deploy
-// never finalizes. With no PORT (plain local run) stay on loopback.
-const host = process.env.HOST || (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
-const accessLog = process.env.PLUT_LOG === "1";
+// never finalizes. A plain local run (no usable PORT) stays on loopback.
+const host =
+  process.env.HOST || (usingEnvPort ? "0.0.0.0" : "127.0.0.1");
+const accessLog = process.env.COMPAXY_LOG === "1";
 
 function logAccess(req, res, target) {
   if (!accessLog) return;
@@ -60,7 +63,7 @@ function entryPage() {
   return `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Plutonium proxy</title>
+<title>Compaxy</title>
 <style>
   :root{color-scheme:dark light}
   body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0f1115;color:#e8eaf0;font:15px/1.5 system-ui,sans-serif}
@@ -121,6 +124,11 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.on("upgrade", (req, socket, head) => {
+  // An upgrade hijacks this socket out of Node's HTTP machinery, so nothing
+  // else is listening for its errors. A client that drops mid-handshake must
+  // end its own connection only - never the process that serves every tab.
+  socket.on("error", () => socket.destroy());
+
   const requestUrl = new URL(req.url, `http://${req.headers.host}`);
   if (!requestUrl.pathname.startsWith(PROXY_PREFIX)) {
     socket.destroy();
@@ -143,6 +151,6 @@ server.on("error", (error) => {
 });
 
 server.listen(port, host, () => {
-  console.log(`Plutonium proxy running at http://${host}:${port}`);
+  console.log(`Compaxy running at http://${host}:${port}`);
   console.log(`Embed it:  <iframe src="http://${host}:${port}/?url=https://example.com/"></iframe>`);
 });

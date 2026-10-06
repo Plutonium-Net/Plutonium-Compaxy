@@ -94,7 +94,7 @@ function maskScriptBodies(html) {
   const masked = html.replace(
     /(<script\b[^>]*>)([\s\S]*?)(<\/script)/gi,
     (_match, open, body, close) => {
-      const token = `\u0000PLUTONIUM_SCRIPT_${bodies.length}\u0000`;
+      const token = `\u0000COMPAXY_SCRIPT_${bodies.length}\u0000`;
       bodies.push(body);
       return `${open}${token}${close}`;
     }
@@ -103,7 +103,7 @@ function maskScriptBodies(html) {
 }
 
 function restoreScriptBodies(value, bodies) {
-  return value.replace(/\u0000PLUTONIUM_SCRIPT_(\d+)\u0000/g, (_match, index) =>
+  return value.replace(/\u0000COMPAXY_SCRIPT_(\d+)\u0000/g, (_match, index) =>
     bodies[Number(index)]
   );
 }

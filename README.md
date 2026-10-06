@@ -1,4 +1,4 @@
-# Plutonium Proxy
+# Compaxy
 
 A server-side fetch-and-rewrite web proxy. There is no frontend: this Node
 process *is* the proxy. Ask it for a site with a query parameter and it fetches,
@@ -17,7 +17,7 @@ iframe / browser  ->  this process  ->  upstream site
 npm start                # http://127.0.0.1:5201
 PORT=8080 npm start      # pick a port
 HOST=0.0.0.0 npm start   # bind elsewhere (read the security note first)
-PLUT_LOG=1 npm start     # log each proxied request
+COMPAXY_LOG=1 npm start  # log each proxied request
 ```
 
 ## Use it
@@ -25,7 +25,7 @@ PLUT_LOG=1 npm start     # log each proxied request
 Point an iframe at the `?url=` address. That is the entire interface:
 
 ```html
-<iframe src="http://127.0.0.1:5201/?url=https://duckduckgo.com/?q=plutonium"></iframe>
+<iframe src="http://127.0.0.1:5201/?url=https://duckduckgo.com/?q=compaxy"></iframe>
 ```
 
 The target is normalised for you, so `?url=example.com` means
@@ -63,6 +63,9 @@ the mirrored path is the canonical form.
 
 - `server.js` — routing: the `?url=` entry point, `/proxy/...`, WebSocket
   upgrade, and the single entry form.
+- `tools/check-sites.js` — the site conformance check (`npm run check`): loads
+  each target through the proxy, verifies the document was rewritten and is not
+  a challenge page, and samples its subresources.
 - `src/urls.js` — the `/proxy/...` scheme, `?url=` normalisation, and SSRF
   protection (private/loopback ranges are refused, including via DNS).
 - `src/headers.js` — request/response header and cookie translation. Strips CSP,
@@ -98,8 +101,28 @@ Checked by following every asset URL a page emits, plus a real browser session:
   bundles and fonts all load.
 - **embedded** — a page on a different origin frames the proxy and the site
   inside it renders and navigates normally.
-- **google.com** — redirects and rewriting work, but Google serves a bot
-  challenge (`/sorry/index`) to this network, so search results do not appear.
+- **23-site launcher pass** — every tile of the reference launcher (YouTube,
+  Twitch, Netflix, Disney+, Spotify, Apple Music, SoundCloud, Discord, Reddit,
+  X, Instagram, TikTok, Pinterest, GitHub, Roblox, Google, DuckDuckGo, ChatGPT,
+  Duck.ai, Claude, Wikipedia, Steam, GeForce NOW) was fetched through the proxy
+  with its rewritten markup and a sample of its subresources, and the JS-heavy
+  ones were opened in a real browser tab. All of them load. Discord and Claude
+  answer a bare request with a Cloudflare challenge, which the browser clears
+  on its own.
+- **google.com** — the homepage renders with a working search box. (An earlier
+  note here reported a `/sorry/index` bot challenge; Google no longer serves one
+  to this network.)
+
+Run the check yourself, against a running proxy:
+
+```bash
+npm start &
+BASE=http://127.0.0.1:5201 npm run check      # full report in reports/
+```
+
+It is a bare HTTP check, so treat a `challenge` verdict as "needs a browser"
+rather than "broken" — the challenge scripts only run in the browser, and the
+launcher tiles above were confirmed by opening them.
 
 ## Known limits
 
@@ -112,7 +135,10 @@ Checked by following every asset URL a page emits, plus a real browser session:
   checks against `poki.com/sitelock`, so some resource loads are deliberately
   aborted. Assets themselves load.
 - Worker-internal requests are only partially shimmed; service workers are
-  disabled on purpose (they cannot be scoped per proxied origin).
+  disabled on purpose (they cannot be scoped per proxied origin). The GeForce
+  NOW client is the visible casualty: its app throws in `postMessageSw` when
+  there is no service worker to message, so it loads every asset and then
+  renders a blank page.
 - Cookies: each proxied site gets host-only cookies scoped to its
   `/proxy/<scheme>/<host>/` path, with the upstream `SameSite` value preserved.
   Embedding the proxy in a third-party page therefore sends a site's `Lax`/

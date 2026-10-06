@@ -9,8 +9,8 @@
 
 export function buildShim(pageUrl) {
   return `(() => {
-  if (window.__plutoniumShim) return;
-  window.__plutoniumShim = true;
+  if (window.__compaxyShim) return;
+  window.__compaxyShim = true;
   const BASE = ${JSON.stringify(pageUrl)};
   const PROXY = "/proxy/";
   const SKIP = /^(data:|blob:|javascript:|mailto:|tel:|about:|filesystem:|#)/i;

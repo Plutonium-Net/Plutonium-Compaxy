@@ -81,6 +81,11 @@ export async function handleProxy(req, res, targetUrl) {
     if (!res.writableFinished) controller.abort();
   };
   res.on("close", onClose);
+  // A streamed body can also fail mid-flight (client gone, upstream reset).
+  // Contain that to this one response: an unhandled 'error' event on either
+  // side would end the process rather than the request.
+  res.on("error", () => res.destroy());
+  req.on("error", () => res.destroy());
 
   try {
     await assertPublicDestination(targetUrl);

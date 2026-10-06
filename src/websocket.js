@@ -47,12 +47,18 @@ export async function handleUpgrade(req, socket, head, resolvedTarget) {
   });
 
   upstream.on("upgrade", (upgradeResponse, upstreamSocket, upstreamHead) => {
+    // Both ends can vanish at any moment - a page navigating away closes its
+    // socket mid-relay. Every socket needs an error listener *before* the first
+    // write, and a write to an already-dead socket reports its failure through
+    // an 'error' event: unlistened, that event takes the whole process down and
+    // with it every other proxied tab.
+    upstreamSocket.on("error", () => socket.destroy());
+    socket.on("error", () => upstreamSocket.destroy());
+
     socket.write(headResponse(upgradeResponse));
     if (upstreamHead?.length) socket.write(upstreamHead);
     if (head?.length) upstreamSocket.write(head);
 
-    upstreamSocket.on("error", () => socket.destroy());
-    socket.on("error", () => upstreamSocket.destroy());
     upstreamSocket.pipe(socket);
     socket.pipe(upstreamSocket);
     const shutdown = () => {
@@ -64,7 +70,15 @@ export async function handleUpgrade(req, socket, head, resolvedTarget) {
   });
 
   upstream.on("response", (response) => {
-    // Upstream declined the upgrade; relay the plain response.
+    // Upstream declined the upgrade; relay the plain response. The same hazard
+    // applies here, and it is the common case: sites that answer an upgrade
+    // request with an ordinary page (Discord's gateway handshake, for one) hit
+    // this path constantly, so a client that disconnects mid-body must not be
+    // able to kill the process.
+    socket.on("error", () => response.destroy());
+    response.on("error", () => socket.destroy());
+    socket.on("close", () => response.destroy());
+    response.on("close", () => socket.destroy());
     socket.write(headResponse(response));
     response.pipe(socket);
   });
