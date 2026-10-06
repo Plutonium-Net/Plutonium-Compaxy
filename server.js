@@ -33,7 +33,11 @@ import { handleUpgrade } from "./src/websocket.js";
 const requestedPort = Number(process.env.PORT);
 const port =
   Number.isInteger(requestedPort) && requestedPort > 0 ? requestedPort : 5201;
-const host = process.env.HOST || "127.0.0.1";
+// Platforms such as Render inject PORT and probe 0.0.0.0 for a listening
+// socket, so when a port is supplied from the environment we must bind every
+// interface; a loopback-only bind is invisible to that probe and the deploy
+// never finalizes. With no PORT (plain local run) stay on loopback.
+const host = process.env.HOST || (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
 const accessLog = process.env.PLUT_LOG === "1";
 
 function logAccess(req, res, target) {
