@@ -1,0 +1,13 @@
+{
+  "name": "plutonium-proxy",
+  "version": "0.2.0",
+  "private": true,
+  "description": "A server-side fetch-and-rewrite web proxy you embed with ?url=<address>.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
