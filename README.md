@@ -59,6 +59,48 @@ With the target in the query string only, the browser's path would always be
 `/` and every one of those cases would break. So `?url=` is the entry point and
 the mirrored path is the canonical form.
 
+## Blocklist
+
+Domains can be blocked, each with its own message. When a request tries to
+reach one, the proxy answers with a `403` page whose body is that message (the
+entry point `/?url=`, direct `/proxy/...` navigation and WebSocket upgrades are
+all covered).
+
+Edit `src/blocklist.js`:
+
+```js
+import { BLOCKLIST } from "./src/blocklist.js";
+
+export const BLOCKLIST = [
+  {
+    domains: ["facebook.com", "www.facebook.com"],
+    message: "Facebook is blocked on this network."
+  },
+  {
+    domains: ["*.ads.example"],
+    message: "Advertising domains are blocked."
+  }
+];
+```
+
+A bare domain (`facebook.com`) blocks that domain and all of its subdomains; a
+`*.`-prefixed entry blocks subdomains only. Alternatively, point
+`COMPAXY_BLOCKLIST` at a JSON file with the same array shape to keep the list
+out of source:
+
+```bash
+COMPAXY_BLOCKLIST=./blocklist.json npm start
+```
+
+```json
+[
+  { "domains": ["facebook.com"], "message": "Facebook is blocked." }
+]
+```
+
+A missing or malformed override file is reported and the built-in list is used,
+so a bad config cannot take the proxy down.
+
 ## What the process owns
 
 - `server.js` — routing: the `?url=` entry point, `/proxy/...`, WebSocket
@@ -68,6 +110,8 @@ the mirrored path is the canonical form.
   a challenge page, and samples its subresources.
 - `src/urls.js` — the `/proxy/...` scheme, `?url=` normalisation, and SSRF
   protection (private/loopback ranges are refused, including via DNS).
+- `src/blocklist.js` — the domain blocklist and per-domain block messages, plus
+  the `403` page that shows them.
 - `src/headers.js` — request/response header and cookie translation. Strips CSP,
   X-Frame-Options, HSTS and cross-origin isolation (which is also what makes the
   proxy embeddable); re-scopes `Set-Cookie` to the proxied origin; rewrites

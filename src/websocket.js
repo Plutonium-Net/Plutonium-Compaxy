@@ -7,6 +7,7 @@
 import http from "node:http";
 import https from "node:https";
 import { fromProxyRequest, assertPublicDestination } from "./urls.js";
+import { blockedMessageForUrl } from "./blocklist.js";
 
 export async function handleUpgrade(req, socket, head, resolvedTarget) {
   let target = resolvedTarget;
@@ -25,6 +26,14 @@ export async function handleUpgrade(req, socket, head, resolvedTarget) {
     parsed = new URL(target);
     await assertPublicDestination(parsed);
   } catch {
+    socket.destroy();
+    return;
+  }
+
+  // A raw Upgrade carries no response body to explain itself, so a blocked
+  // domain is simply refused here; the page that opened it will see the
+  // WebSocket close.
+  if (blockedMessageForUrl(parsed)) {
     socket.destroy();
     return;
   }

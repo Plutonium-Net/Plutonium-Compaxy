@@ -26,6 +26,7 @@ import {
 } from "./src/urls.js";
 import { handleProxy } from "./src/proxy.js";
 import { handleUpgrade } from "./src/websocket.js";
+import { blockedMessageForUrl, renderBlockedPage } from "./src/blocklist.js";
 
 // PORT is only honoured when it is an actual port: environments that set PORT
 // to an empty string or 0 ("pick anything") must still land on the default,
@@ -55,6 +56,12 @@ function sendText(res, status, body, type = "text/plain; charset=utf-8") {
     "cache-control": "no-store"
   });
   res.end(body);
+}
+
+// A blocked domain gets its configured message, not a generic error, so the
+// operator can explain why the site is unavailable.
+function sendBlocked(res, message) {
+  sendText(res, 403, renderBlockedPage(message), "text/html; charset=utf-8");
 }
 
 // The only markup this server owns: a one-field entry form, for when the
@@ -96,6 +103,10 @@ const server = http.createServer(async (req, res) => {
         target = normalizeTargetUrl(raw);
       } catch (error) {
         return sendText(res, 400, `Cannot proxy that: ${error.message}\n`);
+      }
+      const blocked = blockedMessageForUrl(target);
+      if (blocked) {
+        return sendBlocked(res, blocked);
       }
       res.writeHead(302, { location: toProxyUrl(target), "cache-control": "no-store" });
       return res.end();

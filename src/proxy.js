@@ -7,6 +7,7 @@
 
 import { Readable } from "node:stream";
 import { assertPublicDestination } from "./urls.js";
+import { blockedMessageForUrl, renderBlockedPage } from "./blocklist.js";
 import { upstreamRequestHeaders, downstreamResponseHeaders } from "./headers.js";
 import { rewriteHtml, rewriteCss, decodeText } from "./rewrite.js";
 import { cacheKey, get as cacheGet, set as cacheSet } from "./cache.js";
@@ -59,6 +60,15 @@ function storableTtl(req, upstream, contentType) {
 }
 
 export async function handleProxy(req, res, targetUrl) {
+  // A blocked domain is answered here, before the cache or the network, because
+  // this is the single gate every /proxy/... request passes through - direct
+  // navigation, subresources and the entry redirect alike.
+  const blocked = blockedMessageForUrl(targetUrl);
+  if (blocked) {
+    sendBlocked(res, blocked);
+    return;
+  }
+
   // Fast path: a cache hit never touches the network.
   const cacheableRequest =
     req.method === "GET" && !req.headers.authorization && !req.headers.range;
@@ -199,6 +209,14 @@ async function sendResponse(req, res, upstream, targetUrl) {
     res.end();
   }
   return null;
+}
+
+function sendBlocked(res, message) {
+  res.writeHead(403, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store"
+  });
+  res.end(renderBlockedPage(message));
 }
 
 function sendError(res, error) {
