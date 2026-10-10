@@ -21,7 +21,7 @@ import fs from "node:fs";
 // and testable without ever blocking a real site. Replace these with your own.
 export const BLOCKLIST = [
   {
-    domains: ["pornhub.com"],
+    domains: [],
     message: "Stop Gooning Mizzery"
   }
 ];
