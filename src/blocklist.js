@@ -19,12 +19,6 @@ import fs from "node:fs";
 
 // Reserved TLDs (.example) are used as placeholders so the feature is visible
 // and testable without ever blocking a real site. Replace these with your own.
-export const BLOCKLIST = [
-  {
-    domains: [],
-    message: "Stop Gooning Mizzery"
-  }
-];
 
 /**
  * Build the matcher list once: { name, subdomainsOnly, message }.
