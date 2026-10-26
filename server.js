@@ -437,11 +437,11 @@ function entryPage(host) {
 
   <section class="card card--desc">
     <p class="card__desc">
-    Compaxy is a server-side fetch-and-rewrite web proxy: ask it for a site with
-    <strong>?url=&lt;address&gt;</strong> and it fetches, rewrites and serves that site, with
-    every link, asset and redirect mapped back onto its own origin. Use the field
-    above, or point an iframe at the same address — no frontend, no build step, the
-    proxy is the server.
+    Compaxy is a server-side web proxy. Supply a site with
+    <strong>?url=&lt;address&gt;</strong> and it fetches, rewrites and serves that page,
+    mapping every link, asset and redirect back onto its own origin. Enter an
+    address above, or point an iframe at the same route. There is no frontend and
+    no build step; the proxy process is the whole service.
     </p>
   </section>
 </main>
