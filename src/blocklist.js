@@ -17,8 +17,12 @@
 
 import fs from "node:fs";
 
-// Reserved TLDs (.example) are used as placeholders so the feature is visible
-// and testable without ever blocking a real site. Replace these with your own.
+// Domains to block, each with the message the proxy shows instead of the site.
+// A bare domain covers its subdomains too; "*.example.com" covers subdomains
+// only. Empty means nothing is blocked.
+//
+//   { domains: ["facebook.com"], message: "Facebook is blocked on this network." }
+export const BLOCKLIST = [];
 
 /**
  * Build the matcher list once: { name, subdomainsOnly, message }.

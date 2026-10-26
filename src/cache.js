@@ -13,6 +13,11 @@ const MAX_TOTAL_BYTES = 64 * 1024 * 1024;
 const store = new Map();
 let totalBytes = 0;
 
+// Occupancy, for the /healthz report. Read-only: it never touches entries.
+export function stats() {
+  return { entries: store.size, bytes: totalBytes, budget: MAX_TOTAL_BYTES };
+}
+
 export function cacheKey(method, targetUrl) {
   return `${method} ${targetUrl}`;
 }
