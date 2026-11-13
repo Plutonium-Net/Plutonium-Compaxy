@@ -69,6 +69,39 @@ function matches(host, matcher) {
   return host.endsWith(`.${matcher.name}`);
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * The blocklist as destination-host regular expressions.
+ *
+ * This is what the Wisp transport filters on. A service-worker engine opens raw
+ * connections through Wisp, so refusing the connection here is the one point
+ * that covers every request those engines make, including ones a worker-level
+ * check might not decode.
+ */
+export function blockedHostPatterns() {
+  return matchers.map((matcher) =>
+    matcher.subdomainsOnly
+      ? new RegExp(`^.+\\.${escapeRegExp(matcher.name)}$`, "i")
+      : new RegExp(`^(?:.+\\.)?${escapeRegExp(matcher.name)}$`, "i")
+  );
+}
+
+/**
+ * The blocklist as plain rules, for the engine service workers. They decode the
+ * target address out of their own URL format and apply the same matching rules
+ * as blockedMessage().
+ */
+export function blockedHostRules() {
+  return matchers.map((matcher) => ({
+    name: matcher.name,
+    subdomainsOnly: matcher.subdomainsOnly,
+    message: matcher.message
+  }));
+}
+
 /**
  * The message configured for a blocked hostname, or null when it is allowed.
  */

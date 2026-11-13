@@ -1,19 +1,25 @@
 # Compaxy
 
-A server-side fetch-and-rewrite web proxy. There is no frontend: this Node
-process *is* the proxy. Ask it for a site with a query parameter and it fetches,
-rewrites and serves that site, with every URL the page emits mapped back onto
-its own origin.
+A web proxy with four interchangeable engines behind one origin. Ask it for a
+site with a query parameter, and it picks the engine that site is assigned to in
+`sites.json`, then serves the site through it.
 
 ```text
-iframe / browser  ->  this process  ->  upstream site
-   ?url=...            fetch, rewrite, cookies, redirects, WebSocket
-                       <- rewritten page and assets
+iframe / browser  ->  this process  ->  one of four engines  ->  upstream site
+   ?url=...            routing table
 ```
+
+| Engine | How it proxies | Needs |
+| --- | --- | --- |
+| `base` | fetches, rewrites and re-emits pages server-side | nothing |
+| `scramjet` | Scramjet v2 in a service worker, frames driven by its controller | Wisp transport, https or localhost |
+| `ultraviolet` | Ultraviolet 3 in a service worker | Wisp transport, https or localhost |
+| `rammerhead` | testcafe-hammerhead rewriting, with sessions | nothing extra |
 
 ## Run it
 
 ```bash
+npm install              # also builds Rammerhead's client bundles
 npm start                # http://127.0.0.1:5201
 PORT=8080 npm start      # pick a port
 HOST=0.0.0.0 npm start   # bind elsewhere (read the security note first)
@@ -22,48 +28,135 @@ COMPAXY_LOG=1 npm start  # log each proxied request
 
 ## Use it
 
-Point an iframe at the `?url=` address. That is the entire interface:
+Point an iframe at the `?url=` address. That is the whole interface:
 
 ```html
 <iframe src="http://127.0.0.1:5201/?url=https://duckduckgo.com/?q=compaxy"></iframe>
 ```
 
-The target is normalised for you, so `?url=example.com` means
-`https://example.com/`, and the entry point works from an address bar too.
-Opening `http://127.0.0.1:5201/` without a query gives a one-field form for
-testing.
-
-`?url=` answers with a redirect to the address the site is actually served
-from:
+`?url=` looks the site up in the routing table and answers with a redirect to the
+engine that owns it:
 
 ```text
-http://127.0.0.1:5201/?url=https://poki.com/en/g/subway-surfers
-  ->  http://127.0.0.1:5201/proxy/https/poki.com/en/g/subway-surfers
+http://127.0.0.1:5201/?url=https://duckduckgo.com/      ->  /proxy/https/duckduckgo.com/
+http://127.0.0.1:5201/?url=https://netflix.com/         ->  /go/rammerhead?url=...
+http://127.0.0.1:5201/?url=https://example.com/         ->  /go/scramjet#...
 ```
 
-## Why the redirect
+The base engine keeps the target's own path on this origin
+(`/proxy/<scheme>/<host>/<path>`). The other three are entered through a small
+bootstrapper at `/go/<engine>`, because a service-worker proxy has to install and
+activate its worker before the navigation it is meant to intercept.
 
-The proxy serves each target at a path that *mirrors the target's own path*
-(`/proxy/https/<host>/<path>`), rather than carrying the target in the query
-string on every request. That matters for correctness:
+## Routing table
 
-- a relative reference `c.png` on `/proxy/https/example.com/a/b` resolves to
-  `/proxy/https/example.com/a/c.png` in the browser itself, so nothing has to
-  parse or guess it;
-- a form with no `action` posts back to the right place, and a client-side
-  router reading `location.pathname` sees the paths it expects;
-- anything the rewriter happens not to know about still resolves correctly,
-  because the shape of the URL is unchanged.
+`sites.json` at the project root decides which engine serves which site.
+`COMPAXY_SITES=/path/to/table.json` points the server at a different file.
 
-With the target in the query string only, the browser's path would always be
-`/` and every one of those cases would break. So `?url=` is the entry point and
-the mirrored path is the canonical form.
+```json
+{
+  "default": "scramjet",
+  "sites": [
+    { "hosts": ["duckduckgo.com", "wikipedia.org"], "engine": "base" },
+    { "hosts": ["netflix.com"], "engine": "rammerhead" },
+    { "hosts": ["*.games.example"], "engine": "ultraviolet" }
+  ]
+}
+```
+
+- A bare host matches the domain and every subdomain; `*.example.com` matches
+  subdomains only.
+- Entries are tried in order, so list specific hosts before broad ones.
+- Sites not listed use `default` (Scramjet v2 unless the file says otherwise).
+- **There is no fallback.** A site is served by one engine; if it does not work
+  there, the fix is a table edit, not a retry. This keeps a site's cookies and
+  storage on one engine instead of migrating between them mid-session.
+- A malformed or missing table is reported and every site uses the default, so a
+  bad edit cannot take the proxy down. The table is read once at startup.
+
+The entry page shows the current table, with the engine each site maps to.
+
+## Engine routes
+
+| Route | Serves |
+| --- | --- |
+| `/proxy/<scheme>/<host>/<path>` | base engine: the mirrored target path |
+| `/scram/` | Scramjet v2 frame host; proxied pages under `/scram/<frame>/<url>` |
+| `/uv/service/` | Ultraviolet proxied pages |
+| `/<session>/<url>` | Rammerhead session pages |
+| `/go/scramjet`, `/go/ultraviolet`, `/go/rammerhead` | bootstrappers |
+| `/wisp/scram/`, `/wisp/uv/` | Wisp WebSocket endpoints (one per worker engine) |
+
+Engine code is vendored from `node_modules` and served by name only:
+`/sj/` (Scramjet bundle, wasm, controller), `/uv/` (Ultraviolet), `/baremux/`,
+`/epoxy/` (Ultraviolet's transport), `/epoxy3/` (Scramjet's transport). The
+workers and configs at `/scram/sw.js`, `/uv/sw.js` and `/uv/uv.config.js` are
+generated by this server so their prefixes always match the routes it serves.
+
+## What the process owns
+
+- `server.js` — routing: brand assets, `/healthz`, engine surfaces and
+  bootstrappers, `/proxy/...`, Rammerhead's root paths, Wisp upgrades, the
+  `?url=` entry point and the single entry form.
+- `sites.json` — the site → engine table.
+- `src/engines.js` — the table loader, engine registry and host matching.
+- `src/pages.js` — the engine bootstrappers, the Scramjet frame host, and the
+  generated service workers and configs.
+- `src/rammerhead.js` — mounts Rammerhead in-process behind its root-path guard
+  and bridges its internal HTTP server into the one listening socket.
+- `src/static-files.js` — traversal-safe mounts for the vendored engine code.
+- `src/urls.js` — the `/proxy/...` scheme, `?url=` normalisation, and SSRF
+  protection (private/loopback ranges are refused, including via DNS).
+- `src/blocklist.js` — the domain blocklist and per-domain block messages, plus
+  the `403` page that shows them.
+- `src/headers.js` — request/response header and cookie translation. Strips CSP,
+  X-Frame-Options, HSTS and cross-origin isolation (which is also what makes the
+  proxy embeddable); re-scopes `Set-Cookie` to the proxied origin; rewrites
+  `Location`, `Refresh` and `Link`; rewrites `Origin`/`Referer` back to the real
+  target.
+- `src/rewrite.js` — HTML and CSS rewriting with correct charset decoding.
+- `src/shim.js` — the runtime shim injected into every base-engine document.
+- `src/proxy.js` — upstream fetch for the base engine: manual redirects, text
+  buffering for rewriteable types, byte streaming for everything else, ranges.
+- `src/websocket.js` — base-engine WebSocket relay (raw Upgrade, no framing).
+- `src/cache.js` — LRU response cache (4 MB entry / 64 MB total caps).
+- `tools/check-sites.js` — the site check: loads each target through `?url=`,
+  verifies the base-engine document was rewritten, samples subresources, and
+  reports which engine each site was routed to.
+- `tools/build-rammerhead.js` — post-install build of Rammerhead's client
+  bundles (the git dependency ships source only).
+
+## Behaviour worth knowing
+
+**Service workers need a trustworthy origin.** Scramjet and Ultraviolet register
+service workers, which browsers only allow on `https` or on localhost. Over plain
+HTTP on a LAN address both bootstrappers will say so instead of half-working.
+
+**Cross-origin isolation is scoped and `credentialless`.** Both worker engines
+need `SharedArrayBuffer` for their Wisp transport, so their surfaces send
+`Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: credentialless`. The Ultraviolet worker adds the
+same pair to the pages it serves. `credentialless` (not `require-corp`) keeps
+third-party subresources and framed pages loading, which a proxy that is itself
+embedded cannot give up.
+
+**Rammerhead lives at the root of the origin.** Its client scripts use
+root-relative paths (`/hammerhead.js`, `/newsession`, `/<session>/<url>`), so it
+is mounted behind a path guard rather than under a prefix it does not understand.
+It never opens its own socket: its internal server is driven from this one, on
+one port. Sessions are held in memory and expire after a few hours of disuse, so
+nothing a proxied site stores is written to disk.
+
+**Wisp is shared but has two endpoints.** `/wisp/scram/` and `/wisp/uv/` both
+reach the same Wisp server, so each engine's connections are distinguishable in
+logs and proxy configuration. Private and loopback destinations are refused by
+the transport, and per-connection stream counts are capped.
 
 ## Blocklist
 
 Domains can be blocked, each with its own message. When a request tries to
 reach one, the proxy answers with a `403` page whose body is that message (the
-entry point `/?url=`, direct `/proxy/...` navigation and WebSocket upgrades are
+entry point `/?url=`, direct base-engine navigation and WebSocket upgrades are
 all covered).
 
 Edit `src/blocklist.js`:
@@ -92,70 +185,42 @@ out of source:
 COMPAXY_BLOCKLIST=./blocklist.json npm start
 ```
 
-```json
-[
-  { "domains": ["facebook.com"], "message": "Facebook is blocked." }
-]
-```
+A missing or malformed override file is reported and the built-in list is used.
 
-A missing or malformed override file is reported and the built-in list is used,
-so a bad config cannot take the proxy down.
+## Why the base engine mirrors paths
 
-## What the process owns
+The base engine serves each target at a path that *mirrors the target's own
+path* (`/proxy/https/<host>/<path>`), rather than carrying the target in the
+query string on every request. That matters for correctness:
 
-- `server.js` — routing: the `?url=` entry point, `/proxy/...`, WebSocket
-  upgrade, and the single entry form.
-- `tools/check-sites.js` — the site conformance check (`npm run check`): loads
-  each target through the proxy, verifies the document was rewritten and is not
-  a challenge page, and samples its subresources.
-- `src/urls.js` — the `/proxy/...` scheme, `?url=` normalisation, and SSRF
-  protection (private/loopback ranges are refused, including via DNS).
-- `src/blocklist.js` — the domain blocklist and per-domain block messages, plus
-  the `403` page that shows them.
-- `src/headers.js` — request/response header and cookie translation. Strips CSP,
-  X-Frame-Options, HSTS and cross-origin isolation (which is also what makes the
-  proxy embeddable); re-scopes `Set-Cookie` to the proxied origin; rewrites
-  `Location`, `Refresh` and `Link`; rewrites `Origin`/`Referer` back to the real
-  target.
-- `src/rewrite.js` — HTML and CSS rewriting with correct charset decoding.
-  Rewrites URL attributes, `srcset`/`imagesrcset` (spec tokeniser, so commas
-  inside Cloudflare image URLs survive), inline `style`, `<style>`, `<base>` and
-  `<meta refresh>`. Inline `<script>` bodies are masked so rewriting never
-  corrupts embedded JSON/JS, and `target="_top"/"_parent"` is collapsed so a page
-  cannot navigate the host page around it.
-- `src/shim.js` — the runtime shim injected into every proxied document (owned
-  and emitted by the server). It maps URLs built at runtime back onto the proxy:
-  `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `Worker`, `sendBeacon`,
-  `window.open`, `history.pushState/replaceState`, the reflected
-  `src`/`href`/`srcset` setters and `setAttribute`, plus namespaced
-  `localStorage`/`sessionStorage`. It also buffers streamed request bodies,
-  because Chromium refuses an unknown-length body over cleartext HTTP/1.1.
-- `src/proxy.js` — upstream fetch with manual redirects, text buffering for
-  rewriteable types, byte streaming for everything else, range passthrough.
-- `src/websocket.js` — raw Upgrade relay (no WebSocket framing parsed).
-- `src/cache.js` — LRU response cache (4 MB entry / 64 MB total caps).
+- a relative reference `c.png` on `/proxy/https/example.com/a/b` resolves to
+  `/proxy/https/example.com/a/c.png` in the browser itself, so nothing has to
+  parse or guess it;
+- a form with no `action` posts back to the right place, and a client-side
+  router reading `location.pathname` sees the paths it expects;
+- anything the rewriter happens not to know about still resolves correctly,
+  because the shape of the URL is unchanged.
 
 ## Verified
 
-Checked by following every asset URL a page emits, plus a real browser session:
-
-- **duckduckgo.com** — search results render fully; scripts, styles, fonts,
-  images and XHR all load through the proxy.
-- **poki.com** — homepage and game pages render; icons, thumbnails, CSS, JS
-  bundles and fonts all load.
-- **embedded** — a page on a different origin frames the proxy and the site
-  inside it renders and navigates normally.
-- **23-site launcher pass** — every tile of the reference launcher (YouTube,
-  Twitch, Netflix, Disney+, Spotify, Apple Music, SoundCloud, Discord, Reddit,
+- **base engine, 23-site pass** (report in `reports/compaxy-sites.md`): every
+  tile of the reference launcher rendered its rewritten markup and a sample of
+  its subresources. YouTube, Twitch, Netflix, Disney+, Spotify, Discord, Reddit,
   X, Instagram, TikTok, Pinterest, GitHub, Roblox, Google, DuckDuckGo, ChatGPT,
-  Duck.ai, Claude, Wikipedia, Steam, GeForce NOW) was fetched through the proxy
-  with its rewritten markup and a sample of its subresources, and the JS-heavy
-  ones were opened in a real browser tab. All of them load. Discord and Claude
-  answer a bare request with a Cloudflare challenge, which the browser clears
-  on its own.
-- **google.com** — the homepage renders with a working search box. (An earlier
-  note here reported a `/sorry/index` bot challenge; Google no longer serves one
-  to this network.)
+  Duck.ai, Claude, Wikipedia, Steam and GeForce NOW all load; Discord and Claude
+  answer a bare request with a Cloudflare challenge the browser clears.
+- **routing**: `?url=` sends listed hosts to their engine and unlisted hosts to
+  Scramjet; the base engine still redirects to its mirrored path.
+- **Scramjet v2**: bootstrapper installs its worker, opens the Wisp transport and
+  renders `example.com` in its frame through the worker.
+- **Ultraviolet**: bootstrapper installs its worker and navigates into
+  `/uv/service/...`, which serves `example.com` with `crossOriginIsolated` true.
+- **Rammerhead**: `/newsession` returns a session id and
+  `/<session>/https://example.com/` returns the rewritten page; the same path
+  renders in a browser.
+- Not yet verified: which engine actually suits each of the 23 launcher sites
+  beyond the starter table's guesses. That is the point of the table — adjust it
+  from what you see.
 
 Run the check yourself, against a running proxy:
 
@@ -164,34 +229,31 @@ npm start &
 BASE=http://127.0.0.1:5201 npm run check      # full report in reports/
 ```
 
-It is a bare HTTP check, so treat a `challenge` verdict as "needs a browser"
-rather than "broken" — the challenge scripts only run in the browser, and the
-launcher tiles above were confirmed by opening them.
+It is a bare HTTP check, so it can only confirm routing for the worker and
+session engines: those need a real browser to run the engine at all, and are
+reported as `browser` rather than pass/fail.
 
 ## Known limits
 
-- YouTube plays only the first ~60 s of a video. Media is a stateful SABR POST
-  stream to `googlevideo.com`, whose Stream Protection Service starts answering
-  the proxied connection with control-only frames (~a few MB in) regardless of
-  the client hints, address family or body framing sent; the player then stalls
-  and never recovers. Unproxied playback of the same video is unaffected.
-- Poki's playable game does not finish booting: its SDK performs domain-lock
-  checks against `poki.com/sitelock`, so some resource loads are deliberately
-  aborted. Assets themselves load.
-- Worker-internal requests are only partially shimmed; service workers are
-  disabled on purpose (they cannot be scoped per proxied origin). The GeForce
-  NOW client is the visible casualty: its app throws in `postMessageSw` when
-  there is no service worker to message, so it loads every asset and then
-  renders a blank page.
-- Cookies: each proxied site gets host-only cookies scoped to its
-  `/proxy/<scheme>/<host>/` path, with the upstream `SameSite` value preserved.
-  Embedding the proxy in a third-party page therefore sends a site's `Lax`/
-  `Strict` cookies only where the browser allows it.
-- A fetch-and-rewrite proxy cannot render a site that refuses non-browser
-  clients, and it has no JS engine of its own — it relies on the browser's.
+- **base engine**: YouTube plays only the first ~60 s of a video (googlevideo's
+  stateful SABR stream stalls under proxying). Poki's SDK performs domain-lock
+  checks and aborts some loads. Worker-internal requests are only partially
+  shimmed and service workers are disabled, so GeForce NOW renders blank. A
+  fetch-and-rewrite proxy cannot render a site that refuses non-browser clients.
+- **Scramjet v2** is an alpha build of the engine, and its controller API drives
+  a frame rather than a top-level navigation: the address bar stays on
+  `/scram/#<target>` while the site navigates inside the frame.
+- **Ultraviolet** is unmaintained upstream (superseded by Scramjet). It is kept
+  because individual sites sometimes work better on it, which is exactly what
+  the routing table is for.
+- **Rammerhead** keeps one Hammerhead session per visit, which is heavier than
+  the interception engines, and its cross-domain port is disabled because only
+  one port is opened here. Sites that check `Origin` on cross-domain requests
+  may notice.
+- All four: a proxy cannot make a site that refuses non-browser clients work.
 
 ## Security
 
-Do not expose this unauthenticated on the internet. There is no password gate
-any more: bind it to loopback (the default), or put authentication in front of
-it. Private networks are already blocked from being proxied.
+Do not expose this unauthenticated on the internet. There is no password gate:
+bind it to loopback (the default), or put authentication in front of it. Private
+networks are blocked from being proxied by the base engine and by Wisp.

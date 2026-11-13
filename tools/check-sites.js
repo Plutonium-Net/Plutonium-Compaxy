@@ -183,11 +183,25 @@ async function checkAsset(assetPath, docHref) {
   return { url: assetPath, ok: true, why: `${res.status} ${contentType}` };
 }
 
+/**
+ * Which engine the entry point routed this site to, read from the redirect the
+ * server answers with. The base engine keeps the target on this origin, so it
+ * redirects straight to /proxy/... and everything else goes to a bootstrapper.
+ */
+function engineFromHops(hops) {
+  const location = hops[0]?.location || "";
+  if (location.startsWith("/go/rammerhead")) return "rammerhead";
+  if (location.startsWith("/go/ultraviolet")) return "ultraviolet";
+  if (location.startsWith("/go/scramjet")) return "scramjet";
+  return "base";
+}
+
 async function checkSite(site) {
   const result = {
     id: site.id,
     name: site.name,
     target: site.url,
+    engine: "unknown",
     verdict: "unknown",
     document: null,
     assets: { tried: 0, ok: 0, failures: [] },
@@ -196,6 +210,7 @@ async function checkSite(site) {
 
   try {
     const { res, finalUrl, hops } = await loadDocumentWithRetry(site.url);
+    result.engine = engineFromHops(hops);
     const contentType = res.headers.get("content-type") || "";
     result.document = {
       status: res.status,
@@ -207,6 +222,15 @@ async function checkSite(site) {
     if (res.status >= 400) {
       result.verdict = "error";
       result.note = `entry document returned HTTP ${res.status}`;
+      return result;
+    }
+
+    // A service-worker or session engine hands the browser a bootstrapper page
+    // and does the proxying in the browser, so a bare HTTP client can confirm
+    // the routing but cannot load the site through it.
+    if (result.engine !== "base") {
+      result.verdict = "browser";
+      result.note = `routed to ${result.engine}; needs a real browser to run the engine`;
       return result;
     }
     if (!/text\/html|application\/xhtml/i.test(contentType)) {
@@ -280,11 +304,11 @@ async function mapWithLimit(items, limit, worker) {
 }
 
 function renderTable(results) {
-  const order = { challenge: 0, error: 1, partial: 2, ok: 3, unknown: 4 };
+  const order = { challenge: 0, error: 1, partial: 2, browser: 3, ok: 4, unknown: 5 };
   const rows = [...results].sort((a, b) => order[a.verdict] - order[b.verdict]);
   const lines = [];
-  lines.push("site          verdict  doc      rewritten  assets     note");
-  lines.push("-".repeat(78));
+  lines.push("site          engine        verdict  doc      rewritten  assets     note");
+  lines.push("-".repeat(92));
   for (const r of rows) {
     const doc = r.document ? String(r.document.status) : "-";
     const rewritten = r.document ? (r.document.rewritten ? "yes" : "no") : "-";
@@ -294,6 +318,7 @@ function renderTable(results) {
     lines.push(
       [
         r.name.padEnd(13),
+        r.engine.padEnd(13),
         r.verdict.padEnd(8),
         doc.padEnd(8),
         rewritten.padEnd(10),
@@ -332,6 +357,7 @@ function renderReport(results) {
     out.push(`## ${r.name} — ${r.verdict}`);
     out.push("");
     out.push(`- target: ${r.target}`);
+    out.push(`- engine: ${r.engine}`);
     if (r.document) {
       out.push(
         `- document: HTTP ${r.document.status}, ${

@@ -2,13 +2,27 @@
   "name": "compaxy",
   "version": "0.2.0",
   "private": true,
-  "description": "A server-side fetch-and-rewrite web proxy you embed with ?url=<address>.",
+  "description": "A four-engine web proxy: fetch-and-rewrite base, Scramjet v2, Ultraviolet and Rammerhead, routed per site.",
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "check": "node tools/check-sites.js"
+    "check": "node tools/check-sites.js",
+    "postinstall": "node tools/build-rammerhead.js"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "@mercuryworkshop/bare-mux": "^2.1.9",
+    "@mercuryworkshop/epoxy-transport": "^3.0.2",
+    "@mercuryworkshop/scramjet": "2.0.67-alpha.2",
+    "@mercuryworkshop/scramjet-controller": "^0.0.14",
+    "@mercuryworkshop/wisp-js": "^0.5.3",
+    "@titaniumnetwork-dev/ultraviolet": "^3.2.10",
+    "epoxy-uv": "npm:@mercuryworkshop/epoxy-transport@^2.1.29",
+    "rammerhead": "github:binary-person/rammerhead"
+  },
+  "devDependencies": {
+    "dotenv-flow": "^4.1.0"
   }
 }

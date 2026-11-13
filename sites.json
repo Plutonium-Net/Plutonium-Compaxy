@@ -1,0 +1,18 @@
+{
+  "default": "scramjet",
+  "sites": [
+    { "hosts": ["duckduckgo.com"], "engine": "base" },
+    { "hosts": ["wikipedia.org"], "engine": "base" },
+    { "hosts": ["github.com"], "engine": "base" },
+    { "hosts": ["steampowered.com"], "engine": "base" },
+
+    { "hosts": ["netflix.com"], "engine": "rammerhead" },
+    { "hosts": ["disneyplus.com"], "engine": "rammerhead" },
+    { "hosts": ["spotify.com"], "engine": "rammerhead" },
+    { "hosts": ["roblox.com"], "engine": "rammerhead" },
+    { "hosts": ["discord.com"], "engine": "rammerhead" },
+
+    { "hosts": ["poki.com"], "engine": "ultraviolet" },
+    { "hosts": ["neal.fun"], "engine": "ultraviolet" }
+  ]
+}

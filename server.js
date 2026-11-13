@@ -1,7 +1,14 @@
 // Compaxy - server only.
 //
-// There is no frontend and no build step: this process is the whole proxy. Ask
-// it for a site and it fetches, rewrites and serves that site:
+// Four proxy engines share this one origin, and the routing table in sites.json
+// decides which one serves which site:
+//
+//     base        fetch, rewrite and re-emit here          /proxy/<scheme>/<host>/<path>
+//     scramjet    Scramjet v2 in a service worker          /scram/...
+//     ultraviolet Ultraviolet in a service worker          /uv/service/...
+//     rammerhead  Hammerhead sessions, server-side         /<session>/<url>
+//
+// Ask it for a site and it redirects to the engine that owns it:
 //
 //     http://127.0.0.1:5201/?url=https://example.com/
 //
@@ -10,11 +17,13 @@
 //
 //     <iframe src="http://127.0.0.1:5201/?url=https://example.com/"></iframe>
 //
-// The ?url= entry point resolves the target and hands the browser a path-form
-// address (/proxy/<scheme>/<host>/<path>). That extra hop is what keeps the
-// proxy correct: the browser's own URL keeps the upstream site's real path, so
+// The base engine hands the browser a path-form address that mirrors the target
+// (/proxy/<scheme>/<host>/<path>). That is what keeps a rewrite-only proxy
+// correct: the browser's own URL keeps the upstream site's real path, so
 // relative references, forms and client-side routers resolve exactly as they do
-// on the original site, and no rewrite has to guess what a URL meant.
+// on the original site, and no rewrite has to guess what a URL meant. The other
+// engines have their own URL formats and are entered through /go/<engine>, which
+// installs the engine before navigating.
 
 import http from "node:http";
 import fs from "node:fs";
@@ -30,7 +39,31 @@ import {
 import { handleProxy } from "./src/proxy.js";
 import { handleUpgrade } from "./src/websocket.js";
 import { stats as cacheStats } from "./src/cache.js";
-import { blockedMessageForUrl, renderBlockedPage } from "./src/blocklist.js";
+import {
+  blockedMessageForUrl,
+  blockedHostPatterns,
+  blockedHostRules,
+  renderBlockedPage
+} from "./src/blocklist.js";
+import {
+  ENGINES,
+  ENGINE_IDS,
+  engineForUrl,
+  defaultEngine,
+  routingSummary,
+  tableProblem
+} from "./src/engines.js";
+import { directoryMount } from "./src/static-files.js";
+import {
+  scramjetPage,
+  ultravioletPage,
+  rammerheadPage,
+  SCRAMJET_SW,
+  UV_CONFIG,
+  UV_SW
+} from "./src/pages.js";
+import { createRammerhead, isRammerheadPath } from "./src/rammerhead.js";
+import { server as wisp } from "@mercuryworkshop/wisp-js/server";
 
 // PORT is only honoured when it is an actual port: environments that set PORT
 // to an empty string or 0 ("pick anything") must still land on the default,
@@ -47,6 +80,23 @@ const port = usingEnvPort ? requestedPort : 5201;
 const host =
   process.env.HOST || (usingEnvPort ? "0.0.0.0" : "127.0.0.1");
 const accessLog = process.env.COMPAXY_LOG === "1";
+
+// Wisp settings are global to the server module. These caps bound how many
+// streams one browser can fan out through the transport; the default IP guards
+// (private and loopback addresses refused) are deliberately left alone.
+wisp.options.stream_limit_per_host = 64;
+wisp.options.stream_limit_total = 512;
+wisp.options.send_buffer_size = 32;
+
+// The domain blocklist is enforced here too, and this is the important one for
+// the service-worker engines: Scramjet and Ultraviolet open raw connections
+// through Wisp, so refusing the destination host is what stops a blocked site
+// loading through them. The engines' workers also refuse with the configured
+// message; this is the backstop that does not depend on decoding their URLs.
+const blockedHosts = blockedHostPatterns();
+if (blockedHosts.length) {
+  wisp.options.hostname_blacklist = blockedHosts;
+}
 
 function logAccess(req, res, target) {
   if (!accessLog) return;
@@ -77,6 +127,75 @@ const ASSET_FILES = new Map([
 ]);
 const assetBodies = new Map();
 
+// ---- engines ---------------------------------------------------------------
+//
+// Four engines are mounted side by side. Only the base engine lives in this
+// repository; the other three are vendored from node_modules and served by
+// name, so no request path ever reaches those directories directly.
+
+const MODULES = path.join(PROJECT_ROOT, "node_modules");
+const scramjetDist = path.join(MODULES, "@mercuryworkshop", "scramjet", "dist");
+const controllerDist = path.join(MODULES, "@mercuryworkshop", "scramjet-controller", "dist");
+const uvDist = path.join(MODULES, "@titaniumnetwork-dev", "ultraviolet", "dist");
+const baremuxDist = path.join(MODULES, "@mercuryworkshop", "bare-mux", "dist");
+const epoxyScramjetDist = path.join(MODULES, "@mercuryworkshop", "epoxy-transport", "dist");
+const epoxyUltravioletDist = path.join(MODULES, "epoxy-uv", "dist");
+const rammerheadClient = path.join(MODULES, "rammerhead", "src", "client", "rammerhead.js");
+
+// Long-lived engine code may be cached; a worker or config that changes must be
+// revalidated, because a stale service worker is worse than a slow one.
+const ENGINE_CACHE = "public, max-age=3600";
+const VOLATILE_CACHE = "no-cache";
+
+const sjFiles = directoryMount(scramjetDist, {
+  cacheControl: ENGINE_CACHE,
+  only: new Set(["scramjet.js", "scramjet.wasm"])
+});
+const controllerFiles = directoryMount(controllerDist, {
+  cacheControl: ENGINE_CACHE,
+  only: new Set(["controller.api.js", "controller.inject.js", "controller.sw.js"])
+});
+const uvFiles = directoryMount(uvDist, {
+  cacheControl: ENGINE_CACHE,
+  only: new Set(["uv.bundle.js", "uv.client.js", "uv.handler.js", "uv.sw.js"])
+});
+const baremuxFiles = directoryMount(baremuxDist, {
+  cacheControl: ENGINE_CACHE,
+  only: new Set(["index.js", "index.mjs", "worker.js"])
+});
+const epoxyScramjetFiles = directoryMount(epoxyScramjetDist, {
+  cacheControl: ENGINE_CACHE,
+  only: new Set(["index.js", "index.mjs"])
+});
+const epoxyUltravioletFiles = directoryMount(epoxyUltravioletDist, {
+  cacheControl: ENGINE_CACHE,
+  only: new Set(["index.js", "index.mjs"])
+});
+const rammerheadFiles = directoryMount(path.dirname(rammerheadClient), {
+  cacheControl: ENGINE_CACHE,
+  only: new Set([path.basename(rammerheadClient)])
+});
+
+// Service-worker engines need SharedArrayBuffer for their Wisp transport, so
+// their own surfaces are cross-origin isolated. `credentialless` (rather than
+// require-corp) keeps third-party subresources and frames working, which matters
+// because this proxy is meant to be embeddable.
+function isolate(res) {
+  res.setHeader("cross-origin-opener-policy", "same-origin");
+  res.setHeader("cross-origin-embedder-policy", "credentialless");
+  res.setHeader("cross-origin-resource-policy", "cross-origin");
+}
+
+// A broken Rammerhead install must not take the other three engines down.
+let rammerhead = null;
+let rammerheadProblem = null;
+try {
+  rammerhead = createRammerhead({ accessLog });
+} catch (error) {
+  rammerheadProblem = error.message;
+  console.error(`Rammerhead is unavailable: ${error.message}`);
+}
+
 function assetBody(file) {
   if (!assetBodies.has(file)) {
     try {
@@ -95,6 +214,28 @@ function sendBlocked(res, message) {
   sendText(res, 403, renderBlockedPage(message), "text/html; charset=utf-8");
 }
 
+// Rammerhead's session URLs carry the target after the session id:
+// /<session>/https://site/<path>. Requests without an absolute address are
+// subresources the session's page resolved, so the referer names the site.
+function rammerheadTargetFromPath(pathname) {
+  const session = /^\/[a-z0-9]{32}\/(.+)$/.exec(pathname);
+  if (!session) return null;
+  const match = /^https?:\/\/[^/]+/i.exec(session[1]);
+  return match ? match[0] : null;
+}
+
+function rammerheadBlocked(pathname, referer) {
+  const direct = rammerheadTargetFromPath(pathname);
+  if (direct) return blockedMessageForUrl(direct);
+  if (!referer) return null;
+  try {
+    const fromReferer = rammerheadTargetFromPath(new URL(referer).pathname);
+    return fromReferer ? blockedMessageForUrl(fromReferer) : null;
+  } catch {
+    return null;
+  }
+}
+
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (char) => ({
     "&": "&amp;",
@@ -108,7 +249,7 @@ function escapeHtml(value) {
 // The default screen: the brand splash, then the one field this proxy exists
 // for. Everything is sized in vh so the stack shrinks with the window and the
 // cards always clear the wordmark baked into background.png.
-function entryPage(host) {
+function entryPage(host, routing) {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -359,7 +500,31 @@ function entryPage(host) {
     color: rgba(255, 255, 255, 0.3);
   }
 
-  /* ---- 4. description --------------------------------------------------- */
+  /* ---- 4. routing ------------------------------------------------------- */
+
+  .card--routing { display: grid; gap: clamp(6px, 1.2vh, 10px); }
+  .routes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .routes li {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    padding: 4px 9px;
+    font-size: clamp(0.66rem, 1.45vh, 0.76rem);
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 999px;
+  }
+  .routes__host { font-family: var(--mono); color: rgba(245, 245, 247, 0.8); }
+  .routes__engine { color: rgba(232, 23, 93, 0.92); }
+
+  /* ---- 5. description --------------------------------------------------- */
 
   .card__desc {
     max-width: 68ch;
@@ -437,12 +602,26 @@ function entryPage(host) {
 
   <section class="card card--desc">
     <p class="card__desc">
-    Compaxy is a server-side web proxy. Supply a site with
-    <strong>?url=&lt;address&gt;</strong> and it fetches, rewrites and serves that page,
-    mapping every link, asset and redirect back onto its own origin. Enter an
-    address above, or point an iframe at the same route. There is no frontend and
-    no build step; the proxy process is the whole service.
+    Compaxy is a four-engine web proxy. Supply a site with
+    <strong>?url=&lt;address&gt;</strong> and it picks the engine that site is
+    assigned to, then serves the page through it.
     </p>
+  </section>
+
+  <section class="card card--routing">
+    <p class="search__label">Routing</p>
+    <ul class="routes">
+${routing.rows
+  .map(
+    (row) =>
+      `      <li><span class="routes__host">${escapeHtml(row.hosts.join(", "))}</span>` +
+      `<span class="routes__engine">${escapeHtml(row.engine.label)}</span></li>`
+  )
+  .join("\n")}
+    </ul>
+    <p class="status__foot">Unlisted sites use ${escapeHtml(routing.fallback.label)} · edit sites.json${
+      routing.problem ? ` · table could not be read: ${escapeHtml(routing.problem)}` : ""
+    }</p>
   </section>
 </main>
 
@@ -521,10 +700,148 @@ const server = http.createServer(async (req, res) => {
         uptime: Math.round(process.uptime()),
         components: [
           { name: "proxy", ok: true },
-          { name: "cache", ok: cache.bytes <= cache.budget }
+          { name: "cache", ok: cache.bytes <= cache.budget },
+          { name: "rammerhead", ok: Boolean(rammerhead) }
         ],
+        engines: ENGINE_IDS,
+        defaultEngine: defaultEngine().id,
         cache
       });
+    }
+
+    // The engine service workers fetch this to refuse a blocked site with the
+    // configured message rather than a transport error.
+    if (requestUrl.pathname === "/blocked-hosts.json") {
+      return sendJson(res, 200, blockedHostRules());
+    }
+
+    // ---- engine surfaces ---------------------------------------------------
+
+    const sendScript = (body) => {
+      res.writeHead(200, {
+        "content-type": "text/javascript; charset=utf-8",
+        "content-length": Buffer.byteLength(body),
+        "cache-control": VOLATILE_CACHE
+      });
+      res.end(body);
+    };
+
+    // Worker and config scripts are generated here so their prefixes always
+    // match the routes this server actually serves.
+    if (requestUrl.pathname === "/scram/sw.js") {
+      isolate(res);
+      return sendScript(SCRAMJET_SW);
+    }
+    if (requestUrl.pathname === "/uv/sw.js") {
+      isolate(res);
+      return sendScript(UV_SW);
+    }
+    if (requestUrl.pathname === "/uv/uv.config.js") {
+      isolate(res);
+      return sendScript(UV_CONFIG);
+    }
+
+    if (requestUrl.pathname === "/scram/") {
+      isolate(res);
+      res.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store"
+      });
+      return res.end(scramjetPage());
+    }
+
+    // A request arriving under an engine's prefix means that engine's worker was
+    // not in control of it. Send the visitor back through the bootstrapper
+    // instead of guessing what the engine's URL format means.
+    if (requestUrl.pathname.startsWith(ENGINES.scramjet.route)) {
+      const encoded = requestUrl.pathname.slice(ENGINES.scramjet.route.length);
+      res.writeHead(302, {
+        location: `/go/scramjet#${encoded}`,
+        "cache-control": "no-store"
+      });
+      return res.end();
+    }
+
+    // Same contract for Ultraviolet: its encoded path cannot be decoded here
+    // (the codec lives in its client bundle), so say what happened instead of
+    // answering a bare 404.
+    if (requestUrl.pathname.startsWith(ENGINES.ultraviolet.route)) {
+      return sendText(
+        res,
+        404,
+        "Ultraviolet is not controlling this request. Open the site again from /.\n"
+      );
+    }
+
+    const bootstrappers = new Map([
+      ["/go/scramjet", scramjetPage],
+      ["/go/ultraviolet", ultravioletPage],
+      ["/go/rammerhead", rammerheadPage]
+    ]);
+    const bootstrapper = bootstrappers.get(requestUrl.pathname);
+    if (bootstrapper) {
+      // The entry point already refuses a blocked site, but a bootstrapper is
+      // reachable directly, so it checks too.
+      const requested = requestUrl.searchParams.get("url");
+      const message = requested ? blockedMessageForUrl(requested) : null;
+      if (message) return sendBlocked(res, message);
+
+      isolate(res);
+      res.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store"
+      });
+      return res.end(bootstrapper());
+    }
+
+    // Vendored engine code, addressed by prefix and served by name only.
+    const engineMounts = [
+      ["/sj/", [sjFiles, controllerFiles]],
+      ["/uv/", [uvFiles]],
+      ["/baremux/", [baremuxFiles]],
+      ["/epoxy/", [epoxyUltravioletFiles]],
+      ["/epoxy3/", [epoxyScramjetFiles]]
+    ];
+    for (const [prefix, mounts] of engineMounts) {
+      if (!requestUrl.pathname.startsWith(prefix)) continue;
+      isolate(res);
+      const rest = requestUrl.pathname.slice(prefix.length);
+      for (const mount of mounts) {
+        if (mount(req, res, rest)) return;
+      }
+      return sendText(res, 404, "No such engine file.\n");
+    }
+
+    // Rammerhead's own client script, which its rewritten pages ask for.
+    if (requestUrl.pathname === "/rammerhead.js") {
+      if (!rammerhead) {
+        return sendText(res, 501, `Rammerhead is unavailable: ${rammerheadProblem}\n`);
+      }
+      if (rammerheadFiles(req, res, "rammerhead.js")) return;
+    }
+
+    // Rammerhead keeps its client routes and session URLs at the root of the
+    // origin, so it is mounted here behind a path guard rather than under a
+    // prefix its scripts do not use.
+    if (isRammerheadPath(requestUrl.pathname)) {
+      if (!rammerhead) {
+        return sendText(res, 501, `Rammerhead is unavailable: ${rammerheadProblem}\n`);
+      }
+      // Rammerhead fetches upstream itself, so its pages and subresources need
+      // the same gate as the base engine.
+      const blocked = rammerheadBlocked(
+        requestUrl.pathname,
+        req.headers.referer
+      );
+      if (blocked) return sendBlocked(res, blocked);
+
+      logAccess(req, res, requestUrl.pathname);
+      rammerhead.handle(req, res);
+      return;
+    }
+
+    if (requestUrl.pathname.startsWith("/wisp/")) {
+      return sendText(res, 426, "Wisp is a WebSocket endpoint; upgrade to connect.\n");
     }
 
     // Entry point: /?url=<address>. Resolve it, then serve the site from its
@@ -534,7 +851,11 @@ const server = http.createServer(async (req, res) => {
         return sendText(
           res,
           200,
-          entryPage(requestUrl.host),
+          entryPage(requestUrl.host, {
+            rows: routingSummary(),
+            fallback: defaultEngine(),
+            problem: tableProblem()
+          }),
           "text/html; charset=utf-8"
         );
       }
@@ -552,7 +873,23 @@ const server = http.createServer(async (req, res) => {
       if (blocked) {
         return sendBlocked(res, blocked);
       }
-      res.writeHead(302, { location: toProxyUrl(target), "cache-control": "no-store" });
+
+      // The routing table decides, once, which engine serves this site. There is
+      // no fallback: a site that does not work on its engine is a table edit.
+      const { engine } = engineForUrl(target);
+      let location;
+      if (engine.id === "base") {
+        location = toProxyUrl(target);
+      } else if (engine.id === "rammerhead") {
+        location = `/go/rammerhead?url=${encodeURIComponent(target)}`;
+      } else if (engine.id === "ultraviolet") {
+        location = `/go/ultraviolet?url=${encodeURIComponent(target)}`;
+      } else {
+        // The target travels in the query so the bootstrapper's own request can
+        // be checked against the blocklist before the engine starts.
+        location = `/go/scramjet?url=${encodeURIComponent(target)}`;
+      }
+      res.writeHead(302, { location, "cache-control": "no-store" });
       return res.end();
     }
 
@@ -568,8 +905,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    sendText(res, 404, "Not found. Use /?url=<address> to proxy a site.\n");
-  } catch (error) {
+    sendText(res, 404, "Not found. Use /?url=<address> to proxy a site.\n");  } catch (error) {
     if (!res.headersSent) {
       sendText(res, 500, `Server error: ${error.message}\n`);
     } else {
@@ -585,6 +921,40 @@ server.on("upgrade", (req, socket, head) => {
   socket.on("error", () => socket.destroy());
 
   const requestUrl = new URL(req.url, `http://${req.headers.host}`);
+
+  // Wisp: one endpoint per service-worker engine, both backed by the one Wisp
+  // server. A Wisp connection is a raw byte stream to a host and port, so the
+  // transport's own guards (no private or loopback addresses) stay on.
+  if (requestUrl.pathname.startsWith("/wisp/")) {
+    try {
+      wisp.routeRequest(req, socket, head);
+    } catch {
+      socket.destroy();
+    }
+    return;
+  }
+
+  // Rammerhead carries its proxied WebSockets down the same root paths as its
+  // pages, so the guard is the same one the request router uses.
+  if (isRammerheadPath(requestUrl.pathname)) {
+    if (!rammerhead) {
+      socket.destroy();
+      return;
+    }
+    // A raw upgrade has no body to explain itself, so a blocked destination is
+    // simply refused and the page sees its socket close.
+    if (rammerheadBlocked(requestUrl.pathname, req.headers.referer)) {
+      socket.destroy();
+      return;
+    }
+    try {
+      rammerhead.handleUpgrade(req, socket, head);
+    } catch {
+      socket.destroy();
+    }
+    return;
+  }
+
   if (!requestUrl.pathname.startsWith(PROXY_PREFIX)) {
     socket.destroy();
     return;
