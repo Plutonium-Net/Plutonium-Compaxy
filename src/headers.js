@@ -133,11 +133,16 @@ function unproxyUrl(value) {
  * Rewrite upstream response headers for delivery to the browser.
  * `targetUrl` is the URL the response actually came from (post-redirect).
  */
-export function downstreamResponseHeaders(upstreamHeaders, targetUrl) {
+export function downstreamResponseHeaders(
+  upstreamHeaders,
+  targetUrl,
+  { stripCorsHeaders = false } = {}
+) {
   const headers = {};
   for (const [key, value] of upstreamHeaders.entries()) {
     const lower = key.toLowerCase();
     if (DROP_RESPONSE_HEADERS.has(lower)) continue;
+    if (stripCorsHeaders && lower.startsWith("access-control-")) continue;
     if (lower === "set-cookie") continue;
     if (lower === "location") {
       headers.location = mapReference(value, targetUrl);

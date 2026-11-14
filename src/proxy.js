@@ -59,7 +59,7 @@ function storableTtl(req, upstream, contentType) {
   return freshnessSeconds(upstream.headers);
 }
 
-export async function handleProxy(req, res, targetUrl) {
+export async function handleProxy(req, res, targetUrl, options = {}) {
   // A blocked domain is answered here, before the cache or the network, because
   // this is the single gate every /proxy/... request passes through - direct
   // navigation, subresources and the entry redirect alike.
@@ -113,7 +113,7 @@ export async function handleProxy(req, res, targetUrl) {
     }
 
     const upstream = await fetch(targetUrl, init);
-    const entry = await sendResponse(req, res, upstream, targetUrl);
+    const entry = await sendResponse(req, res, upstream, targetUrl, options);
     if (key && entry) cacheSet(key, entry);
   } catch (error) {
     if (res.headersSent) {
@@ -131,8 +131,8 @@ export async function handleProxy(req, res, targetUrl) {
  * Send the upstream response downstream. Returns a cache entry when the
  * response may be reused, otherwise null.
  */
-async function sendResponse(req, res, upstream, targetUrl) {
-  const headers = downstreamResponseHeaders(upstream.headers, targetUrl);
+async function sendResponse(req, res, upstream, targetUrl, options) {
+  const headers = downstreamResponseHeaders(upstream.headers, targetUrl, options);
   const contentType = (upstream.headers.get("content-type") || "").toLowerCase();
   const ttl = storableTtl(req, upstream, contentType);
 

@@ -24,7 +24,13 @@ npm start                # http://127.0.0.1:5201
 PORT=8080 npm start      # pick a port
 HOST=0.0.0.0 npm start   # bind elsewhere (read the security note first)
 COMPAXY_LOG=1 npm start  # log each proxied request
+COMPAXY_DEV_CORS=1 npm start  # permissive CORS for local development only
 ```
+
+`COMPAXY_DEV_CORS=1` enables wildcard CORS and answers preflight requests. It
+requires the server to bind to `localhost`, `127.0.0.1` or `::1`; it does not
+allow credentialed cross-origin requests. Leave it unset outside local
+development.
 
 ## Use it
 

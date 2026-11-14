@@ -80,6 +80,13 @@ const port = usingEnvPort ? requestedPort : 5201;
 const host =
   process.env.HOST || (usingEnvPort ? "0.0.0.0" : "127.0.0.1");
 const accessLog = process.env.COMPAXY_LOG === "1";
+const developmentCors = process.env.COMPAXY_DEV_CORS === "1";
+if (
+  developmentCors &&
+  !["127.0.0.1", "::1", "localhost"].includes(host.toLowerCase())
+) {
+  throw new Error("COMPAXY_DEV_CORS=1 requires HOST to be a loopback address.");
+}
 
 // Wisp settings are global to the server module. These caps bound how many
 // streams one browser can fan out through the transport; the default IP guards
@@ -675,6 +682,23 @@ ${routing.rows
 }
 
 const server = http.createServer(async (req, res) => {
+  if (developmentCors) {
+    res.setHeader("access-control-allow-origin", "*");
+    res.setHeader(
+      "access-control-allow-methods",
+      "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"
+    );
+    res.setHeader(
+      "access-control-allow-headers",
+      req.headers["access-control-request-headers"] || "*"
+    );
+    res.setHeader("access-control-max-age", "600");
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, { "content-length": "0" });
+      return res.end();
+    }
+  }
+
   const requestUrl = new URL(req.url, `http://${req.headers.host}`);
 
   try {
@@ -901,7 +925,7 @@ const server = http.createServer(async (req, res) => {
         return sendText(res, 400, error.message);
       }
       logAccess(req, res, target);
-      await handleProxy(req, res, target);
+      await handleProxy(req, res, target, { stripCorsHeaders: developmentCors });
       return;
     }
 
