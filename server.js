@@ -55,6 +55,11 @@ import {
 } from "./src/engines.js";
 import { directoryMount } from "./src/static-files.js";
 import {
+  NEEDS_ISOLATION,
+  embedCapableEngine,
+  isFramedRequest
+} from "./src/embed.js";
+import {
   scramjetPage,
   ultravioletPage,
   rammerheadPage,
@@ -798,9 +803,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     const bootstrappers = new Map([
-      ["/go/scramjet", scramjetPage],
-      ["/go/ultraviolet", ultravioletPage],
-      ["/go/rammerhead", rammerheadPage]
+      ["/go/scramjet", { engine: ENGINES.scramjet, page: scramjetPage }],
+      ["/go/ultraviolet", { engine: ENGINES.ultraviolet, page: ultravioletPage }],
+      ["/go/rammerhead", { engine: ENGINES.rammerhead, page: rammerheadPage }]
     ]);
     const bootstrapper = bootstrappers.get(requestUrl.pathname);
     if (bootstrapper) {
@@ -810,12 +815,35 @@ const server = http.createServer(async (req, res) => {
       const message = requested ? blockedMessageForUrl(requested) : null;
       if (message) return sendBlocked(res, message);
 
+      // A frame cannot be cross-origin isolated, so this engine could never start
+      // in one (see src/embed.js). Send the frame to the engine that can serve
+      // the site there, rather than a screen it can never get past.
+      if (
+        requested &&
+        isFramedRequest(req.headers) &&
+        NEEDS_ISOLATION.has(bootstrapper.engine.id)
+      ) {
+        let embedTarget = null;
+        try {
+          embedTarget = normalizeTargetUrl(requested);
+        } catch {
+          embedTarget = null;
+        }
+        if (embedTarget) {
+          res.writeHead(302, {
+            location: toProxyUrl(embedTarget),
+            "cache-control": "no-store"
+          });
+          return res.end();
+        }
+      }
+
       isolate(res);
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
         "cache-control": "no-store"
       });
-      return res.end(bootstrapper());
+      return res.end(bootstrapper.page());
     }
 
     // Vendored engine code, addressed by prefix and served by name only.
@@ -899,14 +927,18 @@ const server = http.createServer(async (req, res) => {
       }
 
       // The routing table decides, once, which engine serves this site. There is
-      // no fallback: a site that does not work on its engine is a table edit.
+      // no fallback: a site that does not work on its engine is a table edit. The
+      // one thing that overrides it is where the request came from - a frame can
+      // never be cross-origin isolated, so a worker engine would never boot there
+      // and the server-side engine serves the site instead (see src/embed.js).
       const { engine } = engineForUrl(target);
+      const served = embedCapableEngine(engine, isFramedRequest(req.headers));
       let location;
-      if (engine.id === "base") {
+      if (served.id === "base") {
         location = toProxyUrl(target);
-      } else if (engine.id === "rammerhead") {
+      } else if (served.id === "rammerhead") {
         location = `/go/rammerhead?url=${encodeURIComponent(target)}`;
-      } else if (engine.id === "ultraviolet") {
+      } else if (served.id === "ultraviolet") {
         location = `/go/ultraviolet?url=${encodeURIComponent(target)}`;
       } else {
         // The target travels in the query so the bootstrapper's own request can

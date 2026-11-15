@@ -55,6 +55,13 @@ export function scramjetPage() {
 <script src="/sj/scramjet.js"></script>
 <script src="/sj/controller.api.js"></script>
 <script>
+// The server-side engine serves a site at a path that mirrors the site's own
+// path; this is src/urls.js's toProxyUrl, written for the browser.
+function baseProxyUrl(target) {
+  var url = new URL(target);
+  return '/proxy/' + url.protocol.slice(0, -1) + '/' + url.host + url.pathname + url.search;
+}
+
 // navigator.serviceWorker.ready resolves against the current page's scope, and
 // these bootstrapper pages deliberately sit outside the worker's scope, so wait
 // on the registration's own worker instead.
@@ -84,6 +91,14 @@ function whenActivated(registration) {
     var target = new URLSearchParams(location.search).get('url') ||
       decodeURIComponent(location.hash.slice(1) || '');
     if (!target) throw new Error('No target site was given.');
+    // The Wisp transport needs SharedArrayBuffer, which only a cross-origin
+    // isolated document has. A frame is never isolated (see src/embed.js), so
+    // serve the site from the engine that works there instead of showing a boot
+    // error the frame could never get past.
+    if (!crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
+      location.replace(baseProxyUrl(target));
+      return;
+    }
     if (!('serviceWorker' in navigator)) {
       throw new Error(
         'Service workers need https or localhost; this page is not on an origin that allows them.'
@@ -248,6 +263,13 @@ function whenActivated(registration) {
   try {
     var target = new URLSearchParams(location.search).get('url');
     if (!target) throw new Error('No target site was given.');
+    // See the Scramjet page: SharedArrayBuffer needs an isolated document, and a
+    // frame is never isolated, so serve the site from the server-side engine.
+    if (!crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
+      var url = new URL(target);
+      location.replace('/proxy/' + url.protocol.slice(0, -1) + '/' + url.host + url.pathname + url.search);
+      return;
+    }
     if (!('serviceWorker' in navigator)) {
       throw new Error(
         'Service workers need https or localhost; this page is not on an origin that allows them.'
