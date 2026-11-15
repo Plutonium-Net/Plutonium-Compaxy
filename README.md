@@ -76,7 +76,9 @@ activate its worker before the navigation it is meant to intercept.
 - Sites not listed use `default` (Scramjet v2 unless the file says otherwise).
 - **There is no fallback.** A site is served by one engine; if it does not work
   there, the fix is a table edit, not a retry. This keeps a site's cookies and
-  storage on one engine instead of migrating between them mid-session.
+  storage on one engine instead of migrating between them mid-session. The one
+  exception is where the request came from: a frame is served by the base engine
+  (see below), because a worker engine cannot start inside one.
 - A malformed or missing table is reported and every site uses the default, so a
   bad edit cannot take the proxy down. The table is read once at startup.
 
@@ -145,6 +147,18 @@ need `SharedArrayBuffer` for their Wisp transport, so their surfaces send
 same pair to the pages it serves. `credentialless` (not `require-corp`) keeps
 third-party subresources and framed pages loading, which a proxy that is itself
 embedded cannot give up.
+
+**A frame is never isolated, so framed traffic uses the base engine.** Isolation
+belongs to the whole frame tree: a document framed by a host that is not
+isolated can never be isolated itself, whatever COOP/COEP it sends, and a host
+page usually cannot be isolated because COEP would stop it framing anything.
+Scramjet and Ultraviolet need `SharedArrayBuffer` from that isolation, so
+neither can boot in a frame - which leaves the frame on the bootstrapper's error
+screen. A request that arrives from a frame (`Sec-Fetch-Dest: iframe`) is served
+by the server-side engine instead; the table still decides for top-level visits,
+and Rammerhead, which is server-side too, stays as routed. The bootstrappers
+also fall back on their own when `crossOriginIsolated` is false, which covers
+browsers that send no fetch metadata.
 
 **Rammerhead lives at the root of the origin.** Its client scripts use
 root-relative paths (`/hammerhead.js`, `/newsession`, `/<session>/<url>`), so it
