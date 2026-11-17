@@ -2,12 +2,11 @@
   "name": "compaxy",
   "version": "0.2.0",
   "private": true,
-  "description": "A four-engine web proxy: fetch-and-rewrite base, Scramjet v2, Ultraviolet and Rammerhead, routed per site.",
+  "description": "A three-engine web proxy: fetch-and-rewrite base, Scramjet v2 and Ultraviolet, routed per site.",
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "check": "node tools/check-sites.js",
-    "postinstall": "node tools/build-rammerhead.js"
+    "check": "node tools/check-sites.js"
   },
   "engines": {
     "node": ">=20"
@@ -19,8 +18,7 @@
     "@mercuryworkshop/scramjet-controller": "^0.0.14",
     "@mercuryworkshop/wisp-js": "^0.5.3",
     "@titaniumnetwork-dev/ultraviolet": "^3.2.10",
-    "epoxy-uv": "npm:@mercuryworkshop/epoxy-transport@^2.1.29",
-    "rammerhead": "github:binary-person/rammerhead"
+    "epoxy-uv": "npm:@mercuryworkshop/epoxy-transport@^2.1.29"
   },
   "devDependencies": {
     "dotenv-flow": "^4.1.0"

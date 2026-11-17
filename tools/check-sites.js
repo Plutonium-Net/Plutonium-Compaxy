@@ -190,7 +190,6 @@ async function checkAsset(assetPath, docHref) {
  */
 function engineFromHops(hops) {
   const location = hops[0]?.location || "";
-  if (location.startsWith("/go/rammerhead")) return "rammerhead";
   if (location.startsWith("/go/ultraviolet")) return "ultraviolet";
   if (location.startsWith("/go/scramjet")) return "scramjet";
   return "base";
@@ -225,9 +224,9 @@ async function checkSite(site) {
       return result;
     }
 
-    // A service-worker or session engine hands the browser a bootstrapper page
-    // and does the proxying in the browser, so a bare HTTP client can confirm
-    // the routing but cannot load the site through it.
+    // A service-worker engine hands the browser a bootstrapper page and does
+    // the proxying in the browser, so a bare HTTP client can confirm the
+    // routing but cannot load the site through it.
     if (result.engine !== "base") {
       result.verdict = "browser";
       result.note = `routed to ${result.engine}; needs a real browser to run the engine`;

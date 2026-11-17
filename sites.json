@@ -6,11 +6,11 @@
     { "hosts": ["github.com"], "engine": "base" },
     { "hosts": ["steampowered.com"], "engine": "base" },
 
-    { "hosts": ["netflix.com"], "engine": "rammerhead" },
-    { "hosts": ["disneyplus.com"], "engine": "rammerhead" },
-    { "hosts": ["spotify.com"], "engine": "rammerhead" },
-    { "hosts": ["roblox.com"], "engine": "rammerhead" },
-    { "hosts": ["discord.com"], "engine": "rammerhead" },
+    { "hosts": ["netflix.com"], "engine": "base" },
+    { "hosts": ["disneyplus.com"], "engine": "base" },
+    { "hosts": ["spotify.com"], "engine": "base" },
+    { "hosts": ["roblox.com"], "engine": "base" },
+    { "hosts": ["discord.com"], "engine": "base" },
 
     { "hosts": ["poki.com"], "engine": "ultraviolet" },
     { "hosts": ["neal.fun"], "engine": "ultraviolet" }

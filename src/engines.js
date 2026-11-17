@@ -5,7 +5,7 @@
 // because a site is served by one engine and one engine only - a routed site is
 // never retried on a different engine.
 //
-//     { "hosts": ["netflix.com"], "engine": "rammerhead" }
+//     { "hosts": ["netflix.com"], "engine": "base" }
 //
 // A bare host matches that domain and all of its subdomains; a "*.example.com"
 // entry matches subdomains only. Entries are tried in order, so put specific
@@ -44,13 +44,6 @@ export const ENGINES = {
     kind: "service-worker",
     route: "/uv/service/",
     blurb: "Service worker over Wisp"
-  },
-  rammerhead: {
-    id: "rammerhead",
-    label: "Rammerhead",
-    kind: "session",
-    route: "/<session>/",
-    blurb: "Hammerhead session rewriting"
   }
 };
 
